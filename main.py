@@ -13,6 +13,7 @@ import argparse
 import sys
 import os
 import subprocess
+import statistics
 from pathlib import Path
 from datetime import datetime
 
@@ -22,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from loguru import logger
 from report_generator import generate_html_report
 from lightweight_fetcher import (
-    search_stock, get_stock_full_data, calc_risk_metrics, format_cap,
+    search_stock, get_stock_full_data, format_cap,
 )
 
 # 配置日志
@@ -32,6 +33,71 @@ logger.add("logs/arbitration.log", rotation="10 MB", retention="7 days", level="
 
 
 # ── 分析引擎：基于真实数据生成各 Agent 信号 ─────────────────
+
+def _calc_risk_from_klines(klines: list) -> dict:
+    """
+    直接从K线数据计算风险指标（不依赖外部API）。
+    所有计算基于真实K线数据，确保零假数据。
+    """
+    if not klines or len(klines) < 2:
+        return {}
+
+    result = {}
+    price = klines[-1]["close"]
+
+    # 1. 近5日涨跌幅
+    if len(klines) >= 5:
+        ref = klines[-5]["close"]
+        result["change_5d"] = (price - ref) / ref * 100 if ref > 0 else 0
+
+    # 2. 近20日最大回撤（从峰值到谷值的最大跌幅）
+    window = klines[-20:] if len(klines) >= 20 else klines
+    peak = max(k["high"] for k in window)
+    max_dd = 0
+    running_peak = window[0]["high"]
+    for k in window:
+        if k["high"] > running_peak:
+            running_peak = k["high"]
+        dd = (running_peak - k["low"]) / running_peak * 100 if running_peak > 0 else 0
+        max_dd = max(max_dd, dd)
+    result["max_drawdown"] = max_dd
+
+    # 3. 5日波动率（日收益率标准差 × 100）
+    if len(klines) >= 6:
+        returns = []
+        for i in range(-5, 0):
+            prev_close = klines[i - 1]["close"]
+            if prev_close > 0:
+                returns.append((klines[i]["close"] - prev_close) / prev_close)
+        if len(returns) >= 2:
+            result["volatility_5d"] = statistics.stdev(returns) * 100
+
+    # 4. 量比 = 今日成交量 / 近5日均量
+    if len(klines) >= 6:
+        avg_vol = sum(k["volume"] for k in klines[-6:-1]) / 5
+        result["volume_ratio"] = klines[-1]["volume"] / avg_vol if avg_vol > 0 else 1.0
+
+    # 5. 连续涨跌天数
+    consec_up = 0
+    consec_down = 0
+    for i in range(len(klines) - 1, 0, -1):
+        curr = klines[i]["close"]
+        prev = klines[i - 1]["close"]
+        if curr > prev:
+            if consec_down > 0:
+                break
+            consec_up += 1
+        elif curr < prev:
+            if consec_up > 0:
+                break
+            consec_down += 1
+        else:
+            break
+    result["consecutive_up"] = consec_up
+    result["consecutive_down"] = consec_down
+
+    return result
+
 
 def _build_analysis(market_data: dict, stock_code: str, stock_name: str):
     """
@@ -58,8 +124,8 @@ def _build_analysis(market_data: dict, stock_code: str, stock_name: str):
     turnover = quote.get("turnover") or 0
     market_cap = quote.get("market_cap") or 0
 
-    # === 风险指标 ===
-    risk = calc_risk_metrics(klines) if klines else {}
+    # === 风险指标（直接从K线计算，不依赖外部API） ===
+    risk = _calc_risk_from_klines(klines)
 
     # === 资金流向汇总 ===
     main_net = 0
@@ -527,7 +593,7 @@ def _build_analysis(market_data: dict, stock_code: str, stock_name: str):
     if decision == "BUY":
         judgment = (
             f"综合{bullish}个看多Agent的分析，当前处于偏多格局。"
-            f"AI芯片行业景气度持续提升，芯原作为芯片IP授权龙头具备核心优势。"
+            f"技术面和资金面信号积极，短期有望延续上行趋势。"
         )
         if pe is not None and pe < 0:
             judgment += f"但需注意公司当前亏损状态（PE {pe:.1f}），上涨主要受行业情绪驱动而非基本面支撑。"

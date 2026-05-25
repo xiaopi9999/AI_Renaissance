@@ -214,6 +214,9 @@ def get_realtime_quote(code: str) -> Dict[str, Any]:
                 cap_str = p[45]
                 if cap_str:
                     result["market_cap"] = float(cap_str)  # 亿元
+                # PB (腾讯字段 p[46])
+                if p[46]:
+                    result["pb"] = float(p[46])
                 # 日期
                 date_str = p[30]
                 if date_str and len(date_str) >= 8:
