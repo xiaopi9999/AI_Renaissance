@@ -148,16 +148,16 @@ def _parse_markdown_to_html(md_text: str) -> str:
             html_parts.append(f'<div class="rc-sub-title">{title_text}</div>')
             continue
 
-        # - 列表项 (支持嵌套)
-        if stripped.startswith("- ") or stripped.startswith("  - "):
+        # - 列表项 (支持嵌套: "  - xxx" 是嵌套)
+        if stripped.startswith("- "):
             if in_paragraph:
                 html_parts.append("</p>")
                 in_paragraph = False
             if not in_list:
                 html_parts.append('<ul class="rc-list">')
                 in_list = True
-            indent = "  " in line[:3]
-            item_text = stripped.lstrip("- ").strip()
+            indent = line.startswith("  -") or line.startswith("\t-")
+            item_text = stripped[2:].strip()  # 去掉 "- "
             item_text = _process_inline_formatting(item_text)
             cls = "rc-list-item nested" if indent else "rc-list-item"
             html_parts.append(f'<li class="{cls}">{item_text}</li>')

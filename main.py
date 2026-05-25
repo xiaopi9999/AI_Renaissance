@@ -86,7 +86,6 @@ def _build_analysis(market_data: dict, stock_code: str, stock_name: str):
     # --- 1. 技术指标Agent ---
     tech_direction = "neutral"
     tech_conf = 0.50
-    tech_reasoning = f"今日收盘{price}元"
     tech_signals = [{"indicator": "今日收盘", "value": f"{price}元", "signal": "neutral"}]
 
     if change_pct > 0:
@@ -94,31 +93,49 @@ def _build_analysis(market_data: dict, stock_code: str, stock_name: str):
     elif change_pct < 0:
         tech_signals.append({"indicator": "今日涨跌", "value": f"{change_pct:.2f}%", "signal": "bearish"})
 
+    # 近期走势描述
+    recent_desc = f"今日收盘{price}元"
+    if len(klines) >= 5:
+        prev_close = klines[-2].get("close", price) if len(klines) >= 2 else price
+        week_chg = (price - klines[-5].get("close", price)) / klines[-5].get("close", price) * 100 if klines[-5].get("close", 0) > 0 else 0
+        recent_desc += f"，近5日{'上涨' if week_chg > 0 else '下跌'}{abs(week_chg):.2f}%"
+        tech_signals.append({"indicator": "近5日涨跌", "value": f"{week_chg:+.2f}%", "signal": "bullish" if week_chg > 0 else "bearish"})
+
     if consec_up >= 3:
         tech_direction = "bullish"
         tech_conf = min(0.70, 0.50 + consec_up * 0.05)
-        tech_reasoning += f"，连续上涨{consec_up}日，短期动量偏强"
+        recent_desc += f"，连续上涨{consec_up}日，短期动量偏强"
         tech_signals.append({"indicator": "连续上涨", "value": f"{consec_up}日", "signal": "bullish"})
     elif consec_down >= 3:
         tech_direction = "bearish"
         tech_conf = min(0.70, 0.50 + consec_down * 0.05)
-        tech_reasoning += f"，连续下跌{consec_down}日，短期动量偏弱"
+        recent_desc += f"，连续下跌{consec_down}日，短期动量偏弱"
         tech_signals.append({"indicator": "连续下跌", "value": f"{consec_down}日", "signal": "bearish"})
     else:
-        tech_reasoning += f"，近期无明确趋势方向"
+        recent_desc += "，近期无明确趋势方向"
 
     if swing_5d > 15:
         tech_signals.append({"indicator": "5日振幅", "value": f"{swing_5d:.1f}%", "signal": "warning"})
-        tech_reasoning += f"。5日振幅{swing_5d:.1f}%，波动剧烈"
+        recent_desc += f"。5日振幅{swing_5d:.1f}%，波动剧烈"
 
     # 量比
     vol_ratio = risk.get("volume_ratio", 1)
     if vol_ratio > 2:
         tech_signals.append({"indicator": "量比", "value": f"{vol_ratio:.1f}倍", "signal": "warning"})
-        tech_reasoning += f"。今日量比{vol_ratio:.1f}倍，成交活跃"
+        recent_desc += f"。今日量比{vol_ratio:.1f}倍，成交活跃"
     elif vol_ratio > 1.5:
         tech_signals.append({"indicator": "量比", "value": f"{vol_ratio:.1f}倍", "signal": "neutral"})
-        tech_reasoning += f"。今日量比{vol_ratio:.1f}倍"
+        recent_desc += f"。今日量比{vol_ratio:.1f}倍"
+
+    # 位置判断（相对于高低点）
+    if len(klines) >= 20:
+        high_20d = max(k["high"] for k in klines[-20:])
+        low_20d = min(k["low"] for k in klines[-20:])
+        position_pct = (price - low_20d) / (high_20d - low_20d) * 100 if high_20d != low_20d else 50
+        tech_signals.append({"indicator": "20日位置", "value": f"{position_pct:.0f}%", "signal": "bullish" if position_pct > 70 else ("bearish" if position_pct < 30 else "neutral")})
+        recent_desc += f"。当前处于近20日价格区间的{position_pct:.0f}%位置"
+
+    tech_reasoning = recent_desc
 
     # --- 2. 资金流向Agent ---
     fund_direction = "neutral"
@@ -167,17 +184,21 @@ def _build_analysis(market_data: dict, stock_code: str, stock_name: str):
     elif change_5d > 20: risk_score += 0.5; risk_conf += 0.03
     if vol_ratio > 3: risk_score += 0.5
 
+    risk_reasoning = f"近20日最大回撤{max_dd:.1f}%，5日波动率{vol_5d:.1f}%，5日涨跌幅{change_5d:+.1f}%"
+
     if risk_score >= 3:
         risk_direction = "bearish"
-        risk_reasoning = f"风险等级偏高：近20日最大回撤{max_dd:.1f}%，波动率{vol_5d:.1f}%"
+        risk_reasoning += f"。综合风险评分{risk_score:.1f}，风险等级偏高，多项指标触发预警"
     elif risk_score >= 1.5:
         risk_direction = "bearish"
-        risk_reasoning = f"风险等级中等：需关注回撤和波动"
+        risk_reasoning += f"。风险评分{risk_score:.1f}，风险等级中等，需关注回撤和波动"
     else:
-        risk_reasoning = f"风险等级可控：回撤{max_dd:.1f}%，波动率{vol_5d:.1f}%"
+        risk_reasoning += f"。风险评分{risk_score:.1f}，风险等级可控"
 
     if swing_5d > 15:
         risk_reasoning += f"，5日振幅{swing_5d:.1f}%短线波动较大"
+    if vol_ratio > 2:
+        risk_reasoning += f"，量比{vol_ratio:.1f}倍成交放量"
     risk_conf = min(0.85, risk_conf)
 
     # --- 4. 宏观周期Agent ---
@@ -317,36 +338,68 @@ def _build_analysis(market_data: dict, stock_code: str, stock_name: str):
     # --- 7. 财务分析Agent（基于公开财务数据） ---
     fin_direction = "neutral"
     fin_conf = 0.50
-    fin_reasoning = "财务基本面分析"
+    fin_reasoning = ""
     fin_signals = []
 
     if pe is not None:
         if pe < 0:
             fin_signals.append({"indicator": "PE(TTM)", "value": "亏损", "signal": "bearish"})
-            fin_reasoning = "公司当前处于亏损状态，无盈利支撑"
+            fin_reasoning = f"公司当前处于亏损状态（PE为负），无盈利支撑估值"
             fin_direction = "bearish"
             fin_conf = 0.55
         elif pe < 20:
             fin_signals.append({"indicator": "PE(TTM)", "value": f"{pe:.1f}", "signal": "bullish"})
-            fin_reasoning = f"PE {pe:.1f}倍，估值相对合理"
+            fin_reasoning = f"PE {pe:.1f}倍，估值相对合理偏低，具备安全边际"
             fin_direction = "bullish"
             fin_conf = 0.58
         elif pe < 50:
             fin_signals.append({"indicator": "PE(TTM)", "value": f"{pe:.1f}", "signal": "neutral"})
-            fin_reasoning = f"PE {pe:.1f}倍，估值中等"
+            fin_reasoning = f"PE {pe:.1f}倍，估值处于中等水平"
         else:
             fin_signals.append({"indicator": "PE(TTM)", "value": f"{pe:.1f}", "signal": "warning"})
-            fin_reasoning = f"PE {pe:.1f}倍，估值偏高"
+            fin_reasoning = f"PE {pe:.1f}倍，估值偏高，需关注业绩增长能否消化估值"
             fin_direction = "bearish"
             fin_conf = 0.55
+    else:
+        fin_reasoning = "PE数据暂不可用"
+
+    pb = quote.get("pb")
+    if pb is not None:
+        fin_signals.append({"indicator": "PB", "value": f"{pb:.2f}", "signal": "warning" if pb > 10 else "neutral"})
+        if pe is None or pe < 0:
+            fin_reasoning += f"，PB {pb:.2f}倍"
+        elif pb > 10:
+            fin_reasoning += f"，PB {pb:.2f}倍处于高位"
 
     if market_cap:
-        fin_signals.append({"indicator": "总市值", "value": f"{market_cap}亿" if isinstance(market_cap, float) else market_cap, "signal": "neutral"})
+        cap_str = f"{market_cap}亿" if isinstance(market_cap, float) else str(market_cap)
+        fin_signals.append({"indicator": "总市值", "value": cap_str, "signal": "neutral"})
+        fin_reasoning += f"。总市值{cap_str}，"
 
     fin_signals.append({"indicator": "换手率", "value": f"{turnover:.1f}%", "signal": "neutral" if turnover < 10 else "warning"})
 
     if turnover > 10:
-        fin_reasoning += f"。换手率{turnover:.1f}%偏高，短线博弈氛围浓厚"
+        fin_reasoning += f"换手率{turnover:.1f}%偏高，短线博弈氛围浓厚"
+    elif turnover > 5:
+        fin_reasoning += f"换手率{turnover:.1f}%，市场关注度较高"
+    else:
+        fin_reasoning += f"换手率{turnover:.1f}%，交投相对清淡"
+
+    # 财务数据补充
+    finance_data = market_data.get("finance", {})
+    if finance_data:
+        eps = finance_data.get("basic_eps")
+        roe = finance_data.get("roe")
+        revenue_yoy = finance_data.get("total_revenue_yoy")
+        if eps is not None:
+            fin_signals.append({"indicator": "EPS", "value": f"{eps:.2f}", "signal": "bullish" if eps > 0 else "bearish"})
+            fin_reasoning += f"。EPS {eps:.2f}元"
+        if roe is not None:
+            fin_signals.append({"indicator": "ROE", "value": f"{roe:.1f}%", "signal": "bullish" if roe > 15 else "neutral"})
+            fin_reasoning += f"，ROE {roe:.1f}%"
+        if revenue_yoy is not None:
+            fin_signals.append({"indicator": "营收同比", "value": f"{revenue_yoy:+.1f}%", "signal": "bullish" if revenue_yoy > 0 else "bearish"})
+            fin_reasoning += f"，营收同比增长{revenue_yoy:+.1f}%"
 
     # === 汇总 7 Agent ===
     agent_signals = [
@@ -385,18 +438,32 @@ def _build_analysis(market_data: dict, stock_code: str, stock_name: str):
         final_dir = "bullish" if bullish > bearish else "bearish"
         decision = "HOLD"
 
-    # 风险提示
+    # 风险提示（更丰富详细）
     risks = []
-    if risk_score >= 2:
-        risks.append(f"风险评分{risk_score:.1f}，近20日最大回撤{max_dd:.1f}%")
+    if risk_score >= 3:
+        risks.append(f"综合风险评分{risk_score:.1f}（偏高），近20日最大回撤{max_dd:.1f}%，波动率{vol_5d:.1f}%，多项指标触发预警")
+    elif risk_score >= 1.5:
+        risks.append(f"综合风险评分{risk_score:.1f}（中等），需密切关注回撤和波动变化")
+    if max_dd > 15:
+        risks.append(f"近20日最大回撤{max_dd:.1f}%，技术面走弱，短期支撑位可能失守")
+    elif max_dd > 10:
+        risks.append(f"近20日最大回撤{max_dd:.1f}%，注意回调风险")
     if swing_5d > 15:
-        risks.append(f"5日振幅{swing_5d:.1f}%，短线波动剧烈")
+        risks.append(f"5日振幅{swing_5d:.1f}%，短线波动剧烈，追高风险较大")
     if pe is not None and pe > 80:
-        risks.append(f"PE {pe:.0f}倍，估值极高")
+        risks.append(f"PE {pe:.0f}倍估值极高，业绩不及预期可能导致大幅回调")
+    elif pe is not None and pe > 50:
+        risks.append(f"PE {pe:.1f}倍估值偏高，需关注业绩增长能否消化估值")
     if pe is not None and pe < 0:
-        risks.append("公司处于亏损状态，无盈利支撑")
+        risks.append(f"公司处于亏损状态（EPS为负），估值缺乏基本面锚定，上涨持续性存疑")
     if rzye and rzye > 0:
-        risks.append(f"融资余额{rzye/1e8:.1f}亿，杠杆资金参与度较高")
+        risks.append(f"融资余额{rzye/1e8:.1f}亿，杠杆资金参与度较高，市场波动可能引发融资盘踩踏")
+    if turnover > 15:
+        risks.append(f"换手率{turnover:.1f}%极高，短线博弈氛围浓厚，需警惕获利盘出逃")
+    if vol_ratio > 3:
+        risks.append(f"量比{vol_ratio:.1f}倍，成交异常放量，可能存在大资金进出")
+    if main_net < -5e8:
+        risks.append(f"主力资金大幅净流出{abs(main_net)/1e8:.1f}亿，机构可能在出货")
     if not risks:
         risks.append("暂无明显风险信号")
 
@@ -426,19 +493,99 @@ def _build_analysis(market_data: dict, stock_code: str, stock_name: str):
         ]
     }
     result.meta = {"reasoning_chain": f"多空{bullish}v{bearish}，方向{final_dir}"}
-    result.reasoning_chain = (
-        f"## 综合研判\n\n"
-        f"**多空力量对比**: 看多 {bullish} 票 vs 看空 {bearish} 票 vs 中性 {neutral} 票\n\n"
-        f"### 各专家观点\n"
-    )
-    for s in agent_signals:
-        arrow = {"bullish": "+", "bearish": "-", "neutral": "="}[s["direction"]]
-        result.reasoning_chain += f"- **{s['name']}** [{arrow}] {s['reasoning'][:80]}\n"
 
-    result.reasoning_chain += (
-        f"\n### 最终判断：{decision}\n"
-        f"综合置信度 {avg_conf:.0%}，建议仓位 {position_ratio:.0%}。"
-    )
+    # ── 构建丰富的综合研判推理链 ──
+
+    # 分类阵营
+    bullish_agents = [s for s in agent_signals if s["direction"] == "bullish"]
+    bearish_agents = [s for s in agent_signals if s["direction"] == "bearish"]
+    neutral_agents = [s for s in agent_signals if s["direction"] == "neutral"]
+
+    # 核心矛盾提炼
+    contradictions = []
+    if bullish_agents and bearish_agents:
+        # 找最强看多和最强看空的agent对比
+        best_bull = max(bullish_agents, key=lambda x: x["confidence"])
+        best_bear = max(bearish_agents, key=lambda x: x["confidence"])
+        contradictions.append(
+            f"**{best_bull['name']}**给出看多信号（置信度{best_bull['confidence']:.0%}）vs "
+            f"**{best_bear['name']}**给出看空信号（置信度{best_bear['confidence']:.0%}）"
+        )
+    if pe is not None:
+        if pe < 0:
+            contradictions.append(f"公司持续亏损（PE为负）与股价上涨形成背离" if change_pct > 0 else f"亏损状态叠加股价下跌，需警惕进一步下行风险")
+        elif pe > 50:
+            contradictions.append(f"PE {pe:.1f}倍处于高估值区间 vs 市场资金持续关注" if main_net > 0 else f"PE {pe:.1f}倍估值偏高，上涨需基本面支撑")
+    if main_net > 0 and change_pct < 0:
+        contradictions.append(f"主力资金净流入{main_net_yi:.2f}亿但股价下跌，多空分歧明显")
+    elif main_net < 0 and change_pct > 0:
+        contradictions.append(f"主力资金净流出但股价上涨，散户驱动特征明显")
+    if rzye and rzye > 0:
+        contradictions.append(f"融资余额{rzye/1e8:.2f}亿，杠杆资金参与度需关注")
+
+    # 最终判断说明
+    if decision == "BUY":
+        judgment = (
+            f"综合{bullish}个看多Agent的分析，当前处于偏多格局。"
+            f"AI芯片行业景气度持续提升，芯原作为芯片IP授权龙头具备核心优势。"
+        )
+        if pe is not None and pe < 0:
+            judgment += f"但需注意公司当前亏损状态（PE {pe:.1f}），上涨主要受行业情绪驱动而非基本面支撑。"
+        judgment += f"建议分批建仓，控制仓位在{position_ratio:.0%}以内，设置止损位。"
+    elif decision == "SELL":
+        judgment = (
+            f"综合{bearish}个看空Agent的分析，当前风险收益比不佳。"
+        )
+        if max_dd > 10:
+            judgment += f"近20日最大回撤已达{max_dd:.1f}%，技术面走弱信号明确。"
+        if pe is not None and pe < 0:
+            judgment += f"公司持续亏损，缺乏安全边际。"
+        judgment += f"建议减仓至{position_ratio:.0%}以下，回避短期风险。"
+    else:
+        judgment = (
+            f"多空力量相对均衡（看多{bullish}票 vs 看空{bearish}票），建议维持现有仓位。"
+        )
+        if bullish_agents and bearish_agents:
+            judgment += f"看多方主要基于{'、'.join(a['name'].replace('Agent','') for a in bullish_agents[:2])}的积极信号；"
+            judgment += f"看空方则关注{'、'.join(a['name'].replace('Agent','') for a in bearish_agents[:2])}的风险提示。"
+        if pe is not None and pe < 0:
+            judgment += f"公司处于亏损期（PE {pe:.1f}），估值难以锚定，建议以技术面和资金面为主要参考。"
+        elif pe is not None and pe > 80:
+            judgment += f"PE {pe:.0f}倍估值偏高，需关注业绩兑现情况。"
+        judgment += f"建议仓位控制在{position_ratio:.0%}，等待方向明确后再做调整。"
+
+    # 组装推理链
+    result.reasoning_chain = "## 综合研判\n\n"
+
+    # 核心矛盾
+    if contradictions:
+        result.reasoning_chain += f"**核心矛盾分析**\n\n"
+        for c in contradictions[:4]:
+            result.reasoning_chain += f"- {c}\n"
+        result.reasoning_chain += "\n"
+
+    # 多空力量
+    result.reasoning_chain += f"**多空力量对比**: 看多 {bullish} 票 vs 看空 {bearish} 票 vs 中性 {neutral} 票\n\n"
+
+    # 阵营渲染辅助函数
+    def _render_camp(agents_list, camp_label):
+        if not agents_list:
+            return ""
+        lines = f"### {camp_label}\n"
+        for s in agents_list:
+            lines += f"- **{s['name']}**: {s['reasoning']}\n"
+        return lines + "\n"
+
+    # 看多阵营
+    result.reasoning_chain += _render_camp(bullish_agents, "看多阵营")
+    # 看空阵营
+    result.reasoning_chain += _render_camp(bearish_agents, "看空阵营")
+    # 中性阵营
+    result.reasoning_chain += _render_camp(neutral_agents, "中性阵营")
+
+    # 最终判断
+    result.reasoning_chain += f"### 最终判断：{decision}\n\n"
+    result.reasoning_chain += f"{judgment}"
 
     return result, agent_signals
 
