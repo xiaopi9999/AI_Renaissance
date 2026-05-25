@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Logs
+logs/
+*.log
+
+# IDEs
+.vscode/
+.idea/
+.codebuddy/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment
+.env
+.<环境影响>
+
+# Data (only root-level data/, not skills/data/)
+/data/
+data_sources/data/
+*.db
+*.sqlite
+*.csv
+*.xlsx
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# PyTorch / ML
+*.pth
+*.pt
+*.ckpt
+
+# OS
+Thumbs.db
+
+# Generated reports
+reports/
+run_report_*.html
+
+# Tests
+.pytest_cache/
